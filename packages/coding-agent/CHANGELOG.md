@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The `bash` tool's `timeout` is now an **idle** timeout: it fires only after the given seconds with no output, and each output chunk re-arms it. A long but actively-producing command is no longer killed for running long — only a genuinely stuck command (silent for the whole window) is. Previously `timeout` was wall-clock and would kill work that was still making progress.
+
 ## [1.4.0] - 2026-10-21
 
 ### New Features

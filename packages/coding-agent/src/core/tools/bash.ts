@@ -39,7 +39,12 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Shell command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	timeout: Type.Optional(
+		Type.Number({
+			description:
+				"Idle timeout in seconds (optional, no default): the command is killed only after this many seconds with NO output; output re-arms it, so a long but active command is not killed.",
+		}),
+	),
 });
 
 export const bashToolSystemPromptContribution = {
@@ -126,18 +131,30 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			const onAbort = () => {
 				if (child.pid) killProcessTree(child.pid);
 			};
+			// `timeout` is an IDLE timeout: it fires only after `timeoutMs` with NO output, and every
+			// output chunk re-arms it. A command actively producing output is never killed for running
+			// long; only a genuinely STUCK command — silent for the whole window — is. A wall-clock
+			// timeout, by contrast, kills work that is still making progress, so idle is the right
+			// semantics for "the command hung" vs "the command is slow".
+			const armIdleTimeout = () => {
+				if (timeoutMs === undefined) return;
+				if (timeoutHandle) clearTimeout(timeoutHandle);
+				timeoutHandle = setTimeout(() => {
+					timedOut = true;
+					if (child.pid) killProcessTree(child.pid);
+				}, timeoutMs);
+			};
+			const onDataResettingIdle = (data: Buffer) => {
+				armIdleTimeout();
+				onData(data);
+			};
 
 			try {
-				// Set timeout if provided.
-				if (timeoutMs !== undefined) {
-					timeoutHandle = setTimeout(() => {
-						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
-					}, timeoutMs);
-				}
-				// Stream stdout and stderr.
-				child.stdout?.on("data", onData);
-				child.stderr?.on("data", onData);
+				// Arm the idle timeout; every output chunk below re-arms it.
+				armIdleTimeout();
+				// Stream stdout and stderr, resetting the idle timer on each chunk.
+				child.stdout?.on("data", onDataResettingIdle);
+				child.stderr?.on("data", onDataResettingIdle);
 				// Handle abort signal by killing the entire process tree.
 				if (signal) {
 					if (signal.aborted) onAbort();
